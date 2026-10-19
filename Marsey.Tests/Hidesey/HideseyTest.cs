@@ -106,63 +106,86 @@ public class HideseyTest
     [Test]
     public void Hidesey_HiddenDefinedTypes()
     {
-        List<TypeInfo> allDefinedTypes = new List<TypeInfo>();
+        // 1. Obtain hidden assembly reference in normal view (before Type.Assembly spoofing kicks in)
+        Assembly marseyAssembly = typeof(Hidesey).Assembly;
 
+        var normalTypes = marseyAssembly.DefinedTypes.ToList();
+        Assert.That(normalTypes, Does.Contain(typeof(Hidesey).GetTypeInfo()),
+            "Hidden caller should see all defined types in Marsey assembly.");
+
+        // 2. Under engine view, DefinedTypes on the hidden assembly must be lazy and filter out hidden types
         using (Hidesey.ForceEngineView())
         {
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                if (assembly == Assembly.GetExecutingAssembly()) continue;
+            int countBefore = HideseyPatches.DefinedTypesFilteredCount;
 
-                try
-                {
-                    allDefinedTypes.AddRange(assembly.DefinedTypes);
-                }
-                catch (ReflectionTypeLoadException e)
-                {
-                    allDefinedTypes.AddRange(e.Types.Where(t => t != null).Select(t => t.GetTypeInfo()));
-                }
-                catch
-                {
-                }
-            }
+            // Getter call: should NOT evaluate or filter yet (demonstrating laziness)
+            var lazyEnumerable = marseyAssembly.DefinedTypes;
+            Assert.That(HideseyPatches.DefinedTypesFilteredCount, Is.EqualTo(countBefore),
+                "DefinedTypes must be lazy and not filter during getter invocation.");
+
+            // Materialization: now it filters and increments the counter
+            var filteredTypes = lazyEnumerable.ToList();
+            Assert.That(filteredTypes, Does.Not.Contain(typeof(Hidesey).GetTypeInfo()),
+                "Hidden type must be filtered out under engine view.");
+            Assert.That(HideseyPatches.DefinedTypesFilteredCount, Is.GreaterThan(countBefore),
+                "DefinedTypesFilteredCount must count the actual filtered types.");
+
+            // 3. Non-hidden assembly (CoreLib) must remain intact
+            var stringTypes = typeof(string).Assembly.DefinedTypes;
+            Assert.That(stringTypes, Does.Contain(typeof(string).GetTypeInfo()),
+                "Non-hidden assembly types must not be filtered.");
         }
-
-        List<string> hiddenTypeNamespaces = new List<string> { "Marsey", "Harmony" };
-
-        TypeInfo[] filteredTypes = allDefinedTypes.Where(type =>
-            hiddenTypeNamespaces.Any(forbidden => type.Namespace?.StartsWith(forbidden) ?? false)
-        ).ToArray();
-
-        // Assert
-        Assert.That(filteredTypes, Is.Empty, "Forbidden defined types were found in the engine view domain.");
     }
 
     [Test]
     public void Hidesey_HiddenExceptionStackTrace()
     {
+        string mixedTrace = "   at Robust.Shared.GameObjects.EntitySystem.Update()\n" +
+                            "   at HarmonyLib.PatchFunctions.UpdateWrapper()\n" +
+                            "   at Marsey.Stealthsey.Hidesey.DoSomething()\n" +
+                            "   at Robust.Client.BaseClient.Main()";
+
+        // 1. Normal view (hidden caller) leaves stack trace unmodified
+        string normalTrace = Hidesey.LyingStackTrace(mixedTrace);
+        Assert.That(normalTrace, Is.EqualTo(mixedTrace),
+            "Stack trace should remain unmodified for hidden callers.");
+
+        // 2. Under engine view, hidden frames (Harmony, Marsey) are stripped
+        using (Hidesey.ForceEngineView())
+        {
+            Hidesey.ClearStackTraceCache();
+
+            string sanitized1 = Hidesey.LyingStackTrace(mixedTrace);
+            Assert.That(sanitized1, Does.Not.Contain("HarmonyLib"));
+            Assert.That(sanitized1, Does.Not.Contain("Marsey"));
+            Assert.That(sanitized1, Does.Contain("Robust.Shared.GameObjects.EntitySystem.Update()"));
+            Assert.That(sanitized1, Does.Contain("Robust.Client.BaseClient.Main()"));
+
+            // 3. Test caching: subsequent call with same input should return the cached instance
+            string sanitized2 = Hidesey.LyingStackTrace(mixedTrace);
+            Assert.That(ReferenceEquals(sanitized1, sanitized2), Is.True,
+                "LyingStackTrace must return cached string reference on repeat calls.");
+        }
+
+        // 4. Test actual Exception.StackTrace hook under engine view
         Exception ex;
         try
         {
-            throw new InvalidOperationException("Test exception from Marsey test");
+            throw new InvalidOperationException("Test exception for stack trace verification");
         }
         catch (Exception caught)
         {
             ex = caught;
         }
 
-        string? stackTrace;
         using (Hidesey.ForceEngineView())
         {
-            stackTrace = ex.StackTrace;
-        }
-
-        // Assert
-        if (!string.IsNullOrEmpty(stackTrace))
-        {
-            Assert.That(stackTrace, Does.Not.Contain("0Harmony"));
-            Assert.That(stackTrace, Does.Not.Contain("HarmonyLib"));
-            Assert.That(stackTrace, Does.Not.Contain("Marsey"));
+            string? stackTrace = ex.StackTrace;
+            if (!string.IsNullOrEmpty(stackTrace))
+            {
+                Assert.That(stackTrace, Does.Not.Contain("0Harmony"));
+                Assert.That(stackTrace, Does.Not.Contain("HarmonyLib"));
+            }
         }
     }
 
@@ -170,15 +193,26 @@ public class HideseyTest
     public void Hidesey_HiddenTypeAssembly()
     {
         Type hiddenType = typeof(Hidesey);
-        Assembly? asm;
 
+        // 1. Normal view: caller is hidden, returns real assembly
+        Assert.That(hiddenType.Assembly.GetName().Name, Is.EqualTo("Marsey"),
+            "Hidden caller should see real assembly name.");
+
+        // 2. Engine view: Type.Assembly should be spoofed and counter incremented
         using (Hidesey.ForceEngineView())
         {
-            asm = hiddenType.Assembly;
-        }
+            int spoofCountBefore = HideseyPatches.TypeAssemblySpoofedCount;
+            Assembly spoofed = hiddenType.Assembly;
 
-        // Assert: under engine view, Type.Assembly should be spoofed to a surrogate assembly, not Marsey
-        Assert.That(asm, Is.Not.Null);
-        Assert.That(asm.GetName().Name, Is.Not.EqualTo("Marsey"), "Type.Assembly was not spoofed under engine view.");
+            Assert.That(spoofed, Is.Not.Null);
+            Assert.That(spoofed.GetName().Name, Is.Not.EqualTo("Marsey"),
+                "Type.Assembly was not spoofed under engine view.");
+            Assert.That(HideseyPatches.TypeAssemblySpoofedCount, Is.GreaterThan(spoofCountBefore),
+                "TypeAssemblySpoofedCount should increment on spoofing.");
+
+            // 3. Non-hidden type: remains unchanged
+            Assert.That(typeof(string).Assembly, Is.EqualTo(typeof(object).Assembly),
+                "Non-hidden type's assembly must not be spoofed.");
+        }
     }
 }

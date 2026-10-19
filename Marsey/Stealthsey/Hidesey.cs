@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.Loader;
@@ -33,6 +34,7 @@ public static partial class Hidesey
     private static bool _caching;
     [ThreadStatic] private static bool _inFromHidden;
     [ThreadStatic] private static bool _inLyingTypeAssembly;
+    [ThreadStatic] internal static bool InInternalInspection;
 
     // Fast-path cache for FromHidden: assemblies known to be engine/system, skip stack walk on these
     private static readonly HashSet<Assembly> _knownEngineAsms = new();
@@ -47,6 +49,10 @@ public static partial class Hidesey
         "Anonymously Hosted DynamicMethods Assembly",
         "HarmonySharedState",
     };
+
+    // Cache for sanitized stack trace strings to avoid repeated split/allocations
+    private static readonly ConcurrentDictionary<string, string> _stackTraceCache = new();
+    private const int MaxStackTraceCacheSize = 512;
 
     public static void Initialize()
     {
@@ -842,11 +848,15 @@ public static partial class Hidesey
     /// Delegates the per-line decision to Hidesey.StackLineMentionsHidden (see HideseyRegistries),
     /// which sources hidden names dynamically from the hidden-assembly list + infra keywords +
     /// dynamic Harmony asm names + manifest StackNames.
+    /// Uses thread-safe cache to avoid repeated split and string allocations.
     /// </summary>
     public static string LyingStackTrace(string original)
     {
         if (FromHidden()) return original;
         if (string.IsNullOrEmpty(original)) return original;
+
+        if (_stackTraceCache.TryGetValue(original, out var cached))
+            return cached;
 
         var sb = new System.Text.StringBuilder(original.Length);
         bool hadAny = false;
@@ -857,13 +867,43 @@ public static partial class Hidesey
             sb.Append(line);
             hadAny = true;
         }
-        return sb.ToString();
+
+        var result = sb.ToString();
+        if (_stackTraceCache.Count < MaxStackTraceCacheSize)
+        {
+            _stackTraceCache.TryAdd(original, result);
+        }
+
+        return result;
     }
 
+    public static void ClearStackTraceCache() => _stackTraceCache.Clear();
+
+    /// <summary>
+    /// Filter for Assembly.DefinedTypes getter.
+    /// Lazily streams TypeInfo elements via yield return, filtering out types belonging to hidden assemblies.
+    /// Accurately increments HideseyPatches.DefinedTypesFilteredCount per filtered type as the enumerable is consumed.
+    /// </summary>
     public static IEnumerable<TypeInfo> LyingDefinedTypes(IEnumerable<TypeInfo> original)
     {
+        if (original == null) return Enumerable.Empty<TypeInfo>();
         if (FromHidden()) return original;
-        return original.Where(t => !IsHiddenType(t));
+
+        return FilterIterator(original);
+
+        static IEnumerable<TypeInfo> FilterIterator(IEnumerable<TypeInfo> source)
+        {
+            foreach (var t in source)
+            {
+                if (t == null) continue;
+                if (IsHiddenType(t))
+                {
+                    HideseyPatches.DefinedTypesFilteredCount++;
+                    continue;
+                }
+                yield return t;
+            }
+        }
     }
 
     private static bool IsInternalReflectionCaller()
@@ -902,6 +942,7 @@ public static partial class Hidesey
     public static Assembly LyingTypeAssembly(Assembly original, Type instance)
     {
         if (_inLyingTypeAssembly) return original;
+        if (InInternalInspection) return original;
         if (FromHidden()) return original;
 
         _inLyingTypeAssembly = true;

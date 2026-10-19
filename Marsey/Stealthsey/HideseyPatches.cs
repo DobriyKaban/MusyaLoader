@@ -57,17 +57,17 @@ public static partial class HideseyPatches
     /// <summary>
     /// Diagnostic: Assembly.DefinedTypes filter count.
     /// </summary>
-    public static int DefinedTypesFilteredCount { get; private set; }
+    public static int DefinedTypesFilteredCount { get; internal set; }
 
     /// <summary>
     /// Diagnostic: Exception.StackTrace filter count.
     /// </summary>
-    public static int ExceptionStackTraceFilteredCount { get; private set; }
+    public static int ExceptionStackTraceFilteredCount { get; internal set; }
 
     /// <summary>
     /// Diagnostic: Type.Assembly spoof count.
     /// </summary>
-    public static int TypeAssemblySpoofedCount { get; private set; }
+    public static int TypeAssemblySpoofedCount { get; internal set; }
 
     public static void Lie<T>(ref T __result)
     {
@@ -106,13 +106,7 @@ public static partial class HideseyPatches
     public static void LieDefinedTypes(ref IEnumerable<TypeInfo> __result)
     {
         if (__result == null) return;
-        var original = __result;
-        var filtered = Hidesey.LyingDefinedTypes(__result);
-        __result = filtered;
-        if (!ReferenceEquals(original, filtered))
-        {
-            DefinedTypesFilteredCount++;
-        }
+        __result = Hidesey.LyingDefinedTypes(__result);
     }
 
     public static void LieGetType(ref Type? __result, object[] __args)
@@ -122,9 +116,9 @@ public static partial class HideseyPatches
 
         if (originalResult != null && __result == null && __args.Length > 0 && __args[0] is string probe)
         {
+            TypeGetTypeBlockedCount++;
             try
             {
-                TypeGetTypeBlockedCount++;
                 LastBlockedTypeGetTypeProbe = probe;
                 LastBlockedTypeGetTypeCaller = FindFirstBusinessCaller();
                 if (BlockedTypeGetTypeProbes.Count < 100)
@@ -157,9 +151,9 @@ public static partial class HideseyPatches
                 __1 = null;
                 __result = false;
 
+                TypeGetTypeBlockedCount++;
                 try
                 {
-                    TypeGetTypeBlockedCount++;
                     LastBlockedTypeGetTypeProbe = __0 ?? "?";
                     LastBlockedTypeGetTypeCaller = FindFirstBusinessCaller();
                     if (BlockedTypeGetTypeProbes.Count < 100)
@@ -182,9 +176,9 @@ public static partial class HideseyPatches
 
         if (!ReferenceEquals(originalResult, __result))
         {
+            LocationBlockedCount++;
             try
             {
-                LocationBlockedCount++;
                 LastBlockedLocationCaller = FindFirstBusinessCaller();
                 if (BlockedLocationProbes.Count < 100)
                 {
@@ -209,9 +203,9 @@ public static partial class HideseyPatches
 
         if (!ReferenceEquals(original, __result) && original != __result)
         {
+            StackTraceFilteredCount++;
             try
             {
-                StackTraceFilteredCount++;
                 LastFilteredStackTraceCaller = FindFirstBusinessCaller();
             }
             catch { }
@@ -231,11 +225,7 @@ public static partial class HideseyPatches
 
         if (!ReferenceEquals(original, __result) && original != __result)
         {
-            try
-            {
-                ExceptionStackTraceFilteredCount++;
-            }
-            catch { }
+            ExceptionStackTraceFilteredCount++;
         }
     }
 
@@ -252,11 +242,7 @@ public static partial class HideseyPatches
 
         if (!ReferenceEquals(original, __result))
         {
-            try
-            {
-                TypeAssemblySpoofedCount++;
-            }
-            catch { }
+            TypeAssemblySpoofedCount++;
         }
     }
 

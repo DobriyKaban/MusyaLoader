@@ -146,29 +146,37 @@ public static partial class Hidesey
     public static bool IsHiddenType(Type t)
     {
         if (t == null) return false;
-        if (IsHiddenAsm(t.Assembly)) return true;        // whole-assembly hiding (existing semantics)
-        if (!_anyHiddenTypeNames) return false;          // lock-free fast path: nothing registered
-
-        var fn = t.FullName;
-        if (fn == null) return false;
-
-        bool inComps, inOther;
-        lock (_hideRegLock)
+        Hidesey.InInternalInspection = true;
+        try
         {
-            inOther = _hiddenSystems.Contains(fn) || _hiddenIoc.Contains(fn);
-            inComps = !inOther && _hiddenComps.Contains(fn);
+            if (IsHiddenAsm(t.Assembly)) return true;        // whole-assembly hiding (existing semantics)
+            if (!_anyHiddenTypeNames) return false;          // lock-free fast path: nothing registered
+
+            var fn = t.FullName;
+            if (fn == null) return false;
+
+            bool inComps, inOther;
+            lock (_hideRegLock)
+            {
+                inOther = _hiddenSystems.Contains(fn) || _hiddenIoc.Contains(fn);
+                inComps = !inOther && _hiddenComps.Contains(fn);
+            }
+
+            if (inOther) return true;
+            if (!inComps) return false;
+
+            // Component category — networked guard (reflection + logging done outside the lock).
+            if (IsNetworkedComponent(t))
+            {
+                WarnNetworkedRefusal(fn);
+                return false;                                // leave VISIBLE — hiding would break net hash
+            }
+            return true;
         }
-
-        if (inOther) return true;
-        if (!inComps) return false;
-
-        // Component category — networked guard (reflection + logging done outside the lock).
-        if (IsNetworkedComponent(t))
+        finally
         {
-            WarnNetworkedRefusal(fn);
-            return false;                                // leave VISIBLE — hiding would break net hash
+            Hidesey.InInternalInspection = false;
         }
-        return true;
     }
 
     /// <summary>
