@@ -54,6 +54,21 @@ public static partial class HideseyPatches
     public static string? LastContentFindFilesCaller { get; private set; }
     public static List<string> ContentFindFilesBlockedNames { get; } = new();
 
+    /// <summary>
+    /// Diagnostic: Assembly.DefinedTypes filter count.
+    /// </summary>
+    public static int DefinedTypesFilteredCount { get; private set; }
+
+    /// <summary>
+    /// Diagnostic: Exception.StackTrace filter count.
+    /// </summary>
+    public static int ExceptionStackTraceFilteredCount { get; private set; }
+
+    /// <summary>
+    /// Diagnostic: Type.Assembly spoof count.
+    /// </summary>
+    public static int TypeAssemblySpoofedCount { get; private set; }
+
     public static void Lie<T>(ref T __result)
     {
         __result = __result switch
@@ -65,6 +80,7 @@ public static partial class HideseyPatches
                 assemblyLoadContextEnumerable),
             AssemblyName[] assemblyNames => (T)(object)Hidesey.LyingReference(assemblyNames),
             Type[] types => (T)(object)Hidesey.LyingTyper(types),
+            IEnumerable<TypeInfo> typeInfos => (T)(object)Hidesey.LyingDefinedTypes(typeInfos),
             _ => throw new InvalidOperationException("Unsupported type for LiePatch")
         };
     }
@@ -81,6 +97,22 @@ public static partial class HideseyPatches
         var filtered = Hidesey.LyingFindAllTypes(__result).ToList();
         __result = filtered;
         TryCaptureFindAllTypes(filtered);
+    }
+
+    /// <summary>
+    /// Postfix on Assembly.DefinedTypes getter.
+    /// Filters out TypeInfo instances declared in hidden assemblies/types.
+    /// </summary>
+    public static void LieDefinedTypes(ref IEnumerable<TypeInfo> __result)
+    {
+        if (__result == null) return;
+        var original = __result;
+        var filtered = Hidesey.LyingDefinedTypes(__result);
+        __result = filtered;
+        if (!ReferenceEquals(original, filtered))
+        {
+            DefinedTypesFilteredCount++;
+        }
     }
 
     public static void LieGetType(ref Type? __result, object[] __args)
@@ -181,6 +213,48 @@ public static partial class HideseyPatches
             {
                 StackTraceFilteredCount++;
                 LastFilteredStackTraceCaller = FindFirstBusinessCaller();
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>
+    /// Postfix on Exception.StackTrace getter.
+    /// Filters out lines that reference hidden assemblies or patches.
+    /// </summary>
+    public static void LieExceptionStackTrace(ref string? __result)
+    {
+        if (string.IsNullOrEmpty(__result)) return;
+
+        var original = __result;
+        __result = Hidesey.LyingStackTrace(__result);
+
+        if (!ReferenceEquals(original, __result) && original != __result)
+        {
+            try
+            {
+                ExceptionStackTraceFilteredCount++;
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>
+    /// Postfix on Type.Assembly getter.
+    /// Returns surrogate assembly (e.g. Robust.Client) if type is hidden.
+    /// </summary>
+    public static void LieTypeAssembly(ref Assembly __result, Type __instance)
+    {
+        if (__result == null || __instance == null) return;
+
+        var original = __result;
+        __result = Hidesey.LyingTypeAssembly(__result, __instance);
+
+        if (!ReferenceEquals(original, __result))
+        {
+            try
+            {
+                TypeAssemblySpoofedCount++;
             }
             catch { }
         }

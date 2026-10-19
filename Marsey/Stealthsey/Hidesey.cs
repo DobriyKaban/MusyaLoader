@@ -32,6 +32,7 @@ public static partial class Hidesey
     private static bool _initialized;
     private static bool _caching;
     [ThreadStatic] private static bool _inFromHidden;
+    [ThreadStatic] private static bool _inLyingTypeAssembly;
 
     // Fast-path cache for FromHidden: assemblies known to be engine/system, skip stack walk on these
     private static readonly HashSet<Assembly> _knownEngineAsms = new();
@@ -234,6 +235,15 @@ public static partial class Hidesey
 
         // Closes Environment.StackTrace leak (whitelisted string property).
         PerjurizeStackTrace();
+
+        // Closes Exception.StackTrace leak.
+        PerjurizeExceptionStackTrace();
+
+        // Closes Assembly.DefinedTypes leak.
+        PerjurizeDefinedTypes();
+
+        // Closes Type.Assembly (GetType().Assembly) leak.
+        PerjurizeTypeAssembly();
     }
 
     private static void PerjurizeTryLooseGetType()
@@ -404,6 +414,137 @@ public static partial class Hidesey
         catch (Exception ex)
         {
             MarseyLogger.Log(MarseyLogger.LogType.FATL, $"Environment.StackTrace hook FAILED: {ex.Message}");
+        }
+    }
+
+    private static void PerjurizeExceptionStackTrace()
+    {
+        MethodInfo? postfix = typeof(HideseyPatches).GetMethod(nameof(HideseyPatches.LieExceptionStackTrace),
+            BindingFlags.Public | BindingFlags.Static);
+        if (postfix == null)
+        {
+            MarseyLogger.Log(MarseyLogger.LogType.WARN, "HideseyPatches.LieExceptionStackTrace not found");
+            return;
+        }
+
+        MethodInfo? target = typeof(Exception).GetProperty("StackTrace")?.GetGetMethod();
+        if (target == null)
+        {
+            MarseyLogger.Log(MarseyLogger.LogType.WARN, "Exception.StackTrace getter not found");
+            return;
+        }
+
+        try
+        {
+            var harm = HarmonyManager.GetHarmony();
+            var hm = new HarmonyMethod(postfix)
+            {
+                before = Array.Empty<string>(),
+                after = Array.Empty<string>(),
+                priority = Priority.Normal,
+            };
+            harm.Patch(target, postfix: hm);
+            MarseyLogger.Log(MarseyLogger.LogType.INFO, "Exception.StackTrace hook installed");
+        }
+        catch (Exception ex)
+        {
+            MarseyLogger.Log(MarseyLogger.LogType.FATL, $"Exception.StackTrace hook FAILED: {ex.Message}");
+        }
+    }
+
+    private static void PerjurizeDefinedTypes()
+    {
+        MethodInfo? postfix = typeof(HideseyPatches).GetMethod(nameof(HideseyPatches.LieDefinedTypes),
+            BindingFlags.Public | BindingFlags.Static);
+        if (postfix == null)
+        {
+            MarseyLogger.Log(MarseyLogger.LogType.WARN, "HideseyPatches.LieDefinedTypes not found");
+            return;
+        }
+
+        var targets = new List<MethodInfo>();
+        var baseGetter = typeof(Assembly).GetProperty("DefinedTypes")?.GetGetMethod();
+        if (baseGetter != null && !baseGetter.IsAbstract) targets.Add(baseGetter);
+
+        var runtimeAsm = Assembly.GetExecutingAssembly().GetType();
+        var runtimeGetter = runtimeAsm.GetProperty("DefinedTypes", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)?.GetGetMethod()
+            ?? runtimeAsm.GetProperty("DefinedTypes")?.GetGetMethod();
+        if (runtimeGetter != null && !runtimeGetter.IsAbstract && !targets.Contains(runtimeGetter))
+            targets.Add(runtimeGetter);
+
+        var harm = HarmonyManager.GetHarmony();
+        int hooked = 0;
+        foreach (var target in targets)
+        {
+            try
+            {
+                var hm = new HarmonyMethod(postfix)
+                {
+                    before = Array.Empty<string>(),
+                    after = Array.Empty<string>(),
+                    priority = Priority.Normal,
+                };
+                harm.Patch(target, postfix: hm);
+                MarseyLogger.Log(MarseyLogger.LogType.INFO, $"{target.DeclaringType?.Name}.DefinedTypes hook installed");
+                hooked++;
+            }
+            catch (Exception ex)
+            {
+                MarseyLogger.Log(MarseyLogger.LogType.WARN, $"DefinedTypes hook on {target.DeclaringType?.Name} failed: {ex.Message}");
+            }
+        }
+
+        if (hooked == 0)
+        {
+            MarseyLogger.Log(MarseyLogger.LogType.FATL, "PerjurizeDefinedTypes: no DefinedTypes getter targets hooked");
+        }
+    }
+
+    private static void PerjurizeTypeAssembly()
+    {
+        MethodInfo? postfix = typeof(HideseyPatches).GetMethod(nameof(HideseyPatches.LieTypeAssembly),
+            BindingFlags.Public | BindingFlags.Static);
+        if (postfix == null)
+        {
+            MarseyLogger.Log(MarseyLogger.LogType.WARN, "HideseyPatches.LieTypeAssembly not found");
+            return;
+        }
+
+        var targets = new List<MethodInfo>();
+        var baseGetter = typeof(Type).GetProperty("Assembly")?.GetGetMethod();
+        if (baseGetter != null && !baseGetter.IsAbstract) targets.Add(baseGetter);
+
+        var runtimeType = typeof(object).GetType();
+        var runtimeGetter = runtimeType.GetProperty("Assembly", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)?.GetGetMethod()
+            ?? runtimeType.GetProperty("Assembly")?.GetGetMethod();
+        if (runtimeGetter != null && !runtimeGetter.IsAbstract && !targets.Contains(runtimeGetter))
+            targets.Add(runtimeGetter);
+
+        var harm = HarmonyManager.GetHarmony();
+        int hooked = 0;
+        foreach (var target in targets)
+        {
+            try
+            {
+                var hm = new HarmonyMethod(postfix)
+                {
+                    before = Array.Empty<string>(),
+                    after = Array.Empty<string>(),
+                    priority = Priority.Normal,
+                };
+                harm.Patch(target, postfix: hm);
+                MarseyLogger.Log(MarseyLogger.LogType.INFO, $"{target.DeclaringType?.Name}.Assembly hook installed");
+                hooked++;
+            }
+            catch (Exception ex)
+            {
+                MarseyLogger.Log(MarseyLogger.LogType.WARN, $"Assembly hook on {target.DeclaringType?.Name} failed: {ex.Message}");
+            }
+        }
+
+        if (hooked == 0)
+        {
+            MarseyLogger.Log(MarseyLogger.LogType.FATL, "PerjurizeTypeAssembly: no Type.Assembly targets hooked");
         }
     }
 
@@ -717,6 +858,74 @@ public static partial class Hidesey
             hadAny = true;
         }
         return sb.ToString();
+    }
+
+    public static IEnumerable<TypeInfo> LyingDefinedTypes(IEnumerable<TypeInfo> original)
+    {
+        if (FromHidden()) return original;
+        return original.Where(t => !IsHiddenType(t));
+    }
+
+    private static bool IsInternalReflectionCaller()
+    {
+        if (IsEngineViewForced()) return false;
+
+        var trace = new StackTrace(2, false);
+        var frames = trace.GetFrames();
+        if (frames == null) return false;
+
+        for (int i = 0; i < Math.Min(10, frames.Length); i++)
+        {
+            var method = frames[i].GetMethod();
+            var declType = method?.DeclaringType;
+            if (declType == null) continue;
+
+            var asmName = declType.Assembly?.GetName().Name ?? "";
+            if (asmName.Contains("Harmony") || asmName.Contains("MonoMod") || asmName.Contains("Mono.Cecil"))
+                return true;
+
+            if (declType.FullName != null &&
+                (declType.FullName.StartsWith("System.Reflection.") ||
+                 declType.FullName.StartsWith("System.RuntimeMethodHandle") ||
+                 declType.FullName.StartsWith("System.RuntimeType")))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Filter for Type.Assembly getter — returns a legitimate surrogate (Robust.Client) for hidden types.
+    /// </summary>
+    public static Assembly LyingTypeAssembly(Assembly original, Type instance)
+    {
+        if (_inLyingTypeAssembly) return original;
+        if (FromHidden()) return original;
+
+        _inLyingTypeAssembly = true;
+        try
+        {
+            if (IsInternalReflectionCaller())
+                return original;
+
+            if (IsHiddenAsm(original) || IsHiddenType(instance))
+            {
+                var robust = AppDomain.CurrentDomain.GetAssemblies()
+                    .FirstOrDefault(a => a.GetName().Name == "Robust.Client");
+                if (robust != null && !robust.IsDynamic)
+                    return robust;
+
+                return typeof(object).Assembly;
+            }
+
+            return original;
+        }
+        finally
+        {
+            _inLyingTypeAssembly = false;
+        }
     }
 
     /// <summary>
