@@ -55,11 +55,6 @@ public static partial class HideseyPatches
     public static List<string> ContentFindFilesBlockedNames { get; } = new();
 
     /// <summary>
-    /// Diagnostic: Assembly.DefinedTypes filter count.
-    /// </summary>
-    public static int DefinedTypesFilteredCount { get; internal set; }
-
-    /// <summary>
     /// Diagnostic: Exception.StackTrace filter count.
     /// </summary>
     public static int ExceptionStackTraceFilteredCount { get; internal set; }
@@ -80,7 +75,6 @@ public static partial class HideseyPatches
                 assemblyLoadContextEnumerable),
             AssemblyName[] assemblyNames => (T)(object)Hidesey.LyingReference(assemblyNames),
             Type[] types => (T)(object)Hidesey.LyingTyper(types),
-            IEnumerable<TypeInfo> typeInfos => (T)(object)Hidesey.LyingDefinedTypes(typeInfos),
             _ => throw new InvalidOperationException("Unsupported type for LiePatch")
         };
     }
@@ -97,16 +91,6 @@ public static partial class HideseyPatches
         var filtered = Hidesey.LyingFindAllTypes(__result).ToList();
         __result = filtered;
         TryCaptureFindAllTypes(filtered);
-    }
-
-    /// <summary>
-    /// Postfix on Assembly.DefinedTypes getter.
-    /// Filters out TypeInfo instances declared in hidden assemblies/types.
-    /// </summary>
-    public static void LieDefinedTypes(ref IEnumerable<TypeInfo> __result)
-    {
-        if (__result == null) return;
-        __result = Hidesey.LyingDefinedTypes(__result);
     }
 
     public static void LieGetType(ref Type? __result, object[] __args)

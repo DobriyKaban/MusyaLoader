@@ -87,6 +87,7 @@ public static partial class Hidesey
             MergeInto(_stackHiddenExtra, manifest.StackNames);
 
             _anyHiddenTypeNames = _hiddenSystems.Count > 0 || _hiddenComps.Count > 0 || _hiddenIoc.Count > 0;
+            ClearStackTraceCache();
         }
 
         MarseyLogger.Log(MarseyLogger.LogType.DEBG,
@@ -146,6 +147,7 @@ public static partial class Hidesey
     public static bool IsHiddenType(Type t)
     {
         if (t == null) return false;
+        var prev = Hidesey.InInternalInspection;
         Hidesey.InInternalInspection = true;
         try
         {
@@ -175,7 +177,7 @@ public static partial class Hidesey
         }
         finally
         {
-            Hidesey.InInternalInspection = false;
+            Hidesey.InInternalInspection = prev;
         }
     }
 
@@ -206,7 +208,7 @@ public static partial class Hidesey
         {
             bool hidden;
             lock (_hideRegLock) hidden = name != null && _hiddenCvars.Contains(name);
-            if (!hidden) result.Add(name);
+            if (!hidden && name != null) result.Add(name);
         }
         return result;
     }

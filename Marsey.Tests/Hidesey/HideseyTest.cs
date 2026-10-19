@@ -103,39 +103,7 @@ public class HideseyTest
         Assert.That(filteredCvars, Does.Not.Contain("stealth_cvar"), "Cvar wasn't hidden by the manifest.");
     }
 
-    [Test]
-    public void Hidesey_HiddenDefinedTypes()
-    {
-        // 1. Obtain hidden assembly reference in normal view (before Type.Assembly spoofing kicks in)
-        Assembly marseyAssembly = typeof(Hidesey).Assembly;
 
-        var normalTypes = marseyAssembly.DefinedTypes.ToList();
-        Assert.That(normalTypes, Does.Contain(typeof(Hidesey).GetTypeInfo()),
-            "Hidden caller should see all defined types in Marsey assembly.");
-
-        // 2. Under engine view, DefinedTypes on the hidden assembly must be lazy and filter out hidden types
-        using (Hidesey.ForceEngineView())
-        {
-            int countBefore = HideseyPatches.DefinedTypesFilteredCount;
-
-            // Getter call: should NOT evaluate or filter yet (demonstrating laziness)
-            var lazyEnumerable = marseyAssembly.DefinedTypes;
-            Assert.That(HideseyPatches.DefinedTypesFilteredCount, Is.EqualTo(countBefore),
-                "DefinedTypes must be lazy and not filter during getter invocation.");
-
-            // Materialization: now it filters and increments the counter
-            var filteredTypes = lazyEnumerable.ToList();
-            Assert.That(filteredTypes, Does.Not.Contain(typeof(Hidesey).GetTypeInfo()),
-                "Hidden type must be filtered out under engine view.");
-            Assert.That(HideseyPatches.DefinedTypesFilteredCount, Is.GreaterThan(countBefore),
-                "DefinedTypesFilteredCount must count the actual filtered types.");
-
-            // 3. Non-hidden assembly (CoreLib) must remain intact
-            var stringTypes = typeof(string).Assembly.DefinedTypes;
-            Assert.That(stringTypes, Does.Contain(typeof(string).GetTypeInfo()),
-                "Non-hidden assembly types must not be filtered.");
-        }
-    }
 
     [Test]
     public void Hidesey_HiddenExceptionStackTrace()

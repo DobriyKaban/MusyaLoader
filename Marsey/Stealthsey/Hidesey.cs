@@ -53,6 +53,7 @@ public static partial class Hidesey
     // Cache for sanitized stack trace strings to avoid repeated split/allocations
     private static readonly ConcurrentDictionary<string, string> _stackTraceCache = new();
     private const int MaxStackTraceCacheSize = 512;
+    private static Assembly? _cachedRobustClientAsm;
 
     public static void Initialize()
     {
@@ -138,6 +139,7 @@ public static partial class Hidesey
     {
         Facade.Cloak(marsey);
         _hideseys.Add(marsey);
+        ClearStackTraceCache();
     }
 
     [HideLevelRequirement(HideLevel.Normal)]
@@ -244,9 +246,6 @@ public static partial class Hidesey
 
         // Closes Exception.StackTrace leak.
         PerjurizeExceptionStackTrace();
-
-        // Closes Assembly.DefinedTypes leak.
-        PerjurizeDefinedTypes();
 
         // Closes Type.Assembly (GetType().Assembly) leak.
         PerjurizeTypeAssembly();
@@ -458,53 +457,6 @@ public static partial class Hidesey
         }
     }
 
-    private static void PerjurizeDefinedTypes()
-    {
-        MethodInfo? postfix = typeof(HideseyPatches).GetMethod(nameof(HideseyPatches.LieDefinedTypes),
-            BindingFlags.Public | BindingFlags.Static);
-        if (postfix == null)
-        {
-            MarseyLogger.Log(MarseyLogger.LogType.WARN, "HideseyPatches.LieDefinedTypes not found");
-            return;
-        }
-
-        var targets = new List<MethodInfo>();
-        var baseGetter = typeof(Assembly).GetProperty("DefinedTypes")?.GetGetMethod();
-        if (baseGetter != null && !baseGetter.IsAbstract) targets.Add(baseGetter);
-
-        var runtimeAsm = Assembly.GetExecutingAssembly().GetType();
-        var runtimeGetter = runtimeAsm.GetProperty("DefinedTypes", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)?.GetGetMethod()
-            ?? runtimeAsm.GetProperty("DefinedTypes")?.GetGetMethod();
-        if (runtimeGetter != null && !runtimeGetter.IsAbstract && !targets.Contains(runtimeGetter))
-            targets.Add(runtimeGetter);
-
-        var harm = HarmonyManager.GetHarmony();
-        int hooked = 0;
-        foreach (var target in targets)
-        {
-            try
-            {
-                var hm = new HarmonyMethod(postfix)
-                {
-                    before = Array.Empty<string>(),
-                    after = Array.Empty<string>(),
-                    priority = Priority.Normal,
-                };
-                harm.Patch(target, postfix: hm);
-                MarseyLogger.Log(MarseyLogger.LogType.INFO, $"{target.DeclaringType?.Name}.DefinedTypes hook installed");
-                hooked++;
-            }
-            catch (Exception ex)
-            {
-                MarseyLogger.Log(MarseyLogger.LogType.WARN, $"DefinedTypes hook on {target.DeclaringType?.Name} failed: {ex.Message}");
-            }
-        }
-
-        if (hooked == 0)
-        {
-            MarseyLogger.Log(MarseyLogger.LogType.FATL, "PerjurizeDefinedTypes: no DefinedTypes getter targets hooked");
-        }
-    }
 
     private static void PerjurizeTypeAssembly()
     {
@@ -860,13 +812,21 @@ public static partial class Hidesey
 
         var sb = new System.Text.StringBuilder(original.Length);
         bool hadAny = false;
+        bool removedAny = false;
         foreach (var line in original.Split('\n'))
         {
-            if (StackLineMentionsHidden(line)) continue;
+            if (StackLineMentionsHidden(line))
+            {
+                removedAny = true;
+                continue;
+            }
             if (hadAny) sb.Append('\n');
             sb.Append(line);
             hadAny = true;
         }
+
+        if (!removedAny)
+            return original;
 
         var result = sb.ToString();
         if (_stackTraceCache.Count < MaxStackTraceCacheSize)
@@ -879,32 +839,6 @@ public static partial class Hidesey
 
     public static void ClearStackTraceCache() => _stackTraceCache.Clear();
 
-    /// <summary>
-    /// Filter for Assembly.DefinedTypes getter.
-    /// Lazily streams TypeInfo elements via yield return, filtering out types belonging to hidden assemblies.
-    /// Accurately increments HideseyPatches.DefinedTypesFilteredCount per filtered type as the enumerable is consumed.
-    /// </summary>
-    public static IEnumerable<TypeInfo> LyingDefinedTypes(IEnumerable<TypeInfo> original)
-    {
-        if (original == null) return Enumerable.Empty<TypeInfo>();
-        if (FromHidden()) return original;
-
-        return FilterIterator(original);
-
-        static IEnumerable<TypeInfo> FilterIterator(IEnumerable<TypeInfo> source)
-        {
-            foreach (var t in source)
-            {
-                if (t == null) continue;
-                if (IsHiddenType(t))
-                {
-                    HideseyPatches.DefinedTypesFilteredCount++;
-                    continue;
-                }
-                yield return t;
-            }
-        }
-    }
 
     private static bool IsInternalReflectionCaller()
     {
@@ -953,10 +887,13 @@ public static partial class Hidesey
 
             if (IsHiddenAsm(original) || IsHiddenType(instance))
             {
-                var robust = AppDomain.CurrentDomain.GetAssemblies()
-                    .FirstOrDefault(a => a.GetName().Name == "Robust.Client");
-                if (robust != null && !robust.IsDynamic)
-                    return robust;
+                if (_cachedRobustClientAsm == null || _cachedRobustClientAsm.IsDynamic)
+                {
+                    _cachedRobustClientAsm = AppDomain.CurrentDomain.GetAssemblies()
+                        .FirstOrDefault(a => a.GetName().Name == "Robust.Client" && !a.IsDynamic);
+                }
+                if (_cachedRobustClientAsm != null)
+                    return _cachedRobustClientAsm;
 
                 return typeof(object).Assembly;
             }
